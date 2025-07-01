@@ -32,7 +32,7 @@ initial_api_data_template = {
     "tong_xiu": 0.0,
     "du_doan": "Không có",
     "ly_do": "Chưa có dữ liệu dự đoán.",
-    "phien_du_doan": None, # Sẽ là new_session_data['ID'] + 1
+    "phien_du_doan": None, # Sẽ được tính toán từ Expect của phiên hiện tại
     "admin_info": "@heheviptool"
 }
 
@@ -43,7 +43,7 @@ history_results = collections.deque(maxlen=100) # Ví dụ: 100 phiên gần nh�
 
 # Lưu trữ trạng thái dự đoán gần nhất để kiểm tra 'consecutive_losses'
 last_prediction_info = {
-    "predicted_expect": None, # ID của phiên đã được dự đoán trong lần chạy trước
+    "predicted_expect": None, # Expect code của phiên đã được dự đoán trong lần chạy trước
     "predicted_result": None, # "Tài" hoặc "Xỉu"
     "consecutive_losses": 0, # Số lần dự đoán sai liên tiếp
     "last_actual_result": None # Kết quả thực tế của phiên vừa rồi
@@ -71,6 +71,28 @@ def calculate_tai_xiu(open_code_str):
         print(f"Error calculating Tai/Xiu from OpenCode '{open_code_str}': {e}")
         return "Lỗi", 0
 
+def get_next_expect_code(current_expect_code):
+    """
+    Tính toán Expect code của phiên tiếp theo bằng cách tăng phần số cuối cùng.
+    Giả định Expect code có dạng 'YYYYMMDDXXXX' với XXXX là số tăng dần 4 chữ số.
+    """
+    if len(current_expect_code) < 4 or not current_expect_code[-4:].isdigit():
+        print(f"Warning: Expect code '{current_expect_code}' does not match expected format for incrementing.")
+        return None # Hoặc xử lý lỗi tùy theo yêu cầu
+
+    prefix = current_expect_code[:-4]
+    suffix_str = current_expect_code[-4:]
+    
+    try:
+        suffix_int = int(suffix_str)
+        next_suffix_int = suffix_int + 1
+        next_suffix_str = str(next_suffix_int).zfill(len(suffix_str)) # Đảm bảo giữ nguyên số chữ số
+        return prefix + next_suffix_str
+    except ValueError:
+        print(f"Error: Could not convert suffix '{suffix_str}' to integer.")
+        return None
+
+
 def update_history_and_state(new_session_data):
     """
     Cập nhật lịch sử và trạng thái dự đoán toàn cục dựa trên dữ liệu phiên mới.
@@ -96,29 +118,34 @@ def update_history_and_state(new_session_data):
 
         # --- Cập nhật Consecutive Losses dựa trên phiên vừa rồi ---
         # Logic này kiểm tra xem dự đoán của phiên TRƯỚC ĐÓ (predicted_expect)
-        # có khớp với ID của phiên HIỆN TẠI mà ta vừa nhận được kết quả hay không.
-        if last_prediction_info["predicted_expect"] and \
-           last_prediction_info["predicted_expect"] == current_id and \
-           last_prediction_info["predicted_result"]:
+        # có khớp với Expect code của phiên HIỆN TẠI mà ta vừa nhận được kết quả hay không.
+        # last_prediction_info["predicted_expect"] lưu Expect code của phiên mà chúng ta đã dự đoán cho nó.
+        # current_expect_code là Expect code của phiên mà chúng ta vừa nhận được kết quả thực tế.
+        if last_prediction_info["predicted_expect"] is not None and \
+           last_prediction_info["predicted_expect"] == current_expect_code and \
+           last_prediction_info["predicted_result"] is not None:
             
             predicted_res = last_prediction_info["predicted_result"]
             
             if predicted_res.lower() != actual_result_char:
                 last_prediction_info["consecutive_losses"] += 1
-                print(f"Prediction '{predicted_res}' for session ID {current_id} MISSED. Consecutive losses: {last_prediction_info['consecutive_losses']}")
+                print(f"Prediction '{predicted_res}' for session Expect {current_expect_code} MISSED. Consecutive losses: {last_prediction_info['consecutive_losses']}")
             else:
                 last_prediction_info["consecutive_losses"] = 0
-                print(f"Prediction '{predicted_res}' for session ID {current_id} CORRECT. Resetting losses.")
+                print(f"Prediction '{predicted_res}' for session Expect {current_expect_code} CORRECT. Resetting losses.")
         else:
             # Nếu không có dự đoán trước đó hoặc phiên không khớp (ví dụ: khởi động lại app), reset loss
             last_prediction_info["consecutive_losses"] = 0
-            print("No matching previous prediction to evaluate. Resetting losses.")
+            print("No matching previous prediction to evaluate or app restarted. Resetting losses.")
         
         last_prediction_info["last_actual_result"] = actual_result_char # Cập nhật kết quả thực tế mới nhất
 
     # Cập nhật các trường chính trong initial_api_data_template
     initial_api_data_template["Phien_moi"] = current_expect_code # Hiển thị Expect code làm "phiên mới"
-    initial_api_data_template["phien_du_doan"] = current_id + 1 # Phiên tiếp theo để dự đoán (dựa vào ID tăng dần)
+    
+    # Tính toán Phien_du_doan bằng cách tăng Expect code của phiên hiện tại
+    next_expect_code = get_next_expect_code(current_expect_code)
+    initial_api_data_template["phien_du_doan"] = next_expect_code if next_expect_code else "Không xác định"
 
     # --- Cập nhật pattern và pattern percentages ---
     current_pattern_chars = "".join([entry['Result'] for entry in history_results])
